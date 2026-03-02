@@ -14,7 +14,9 @@ import json
 import os
 import secrets
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
 import urllib.request
 import urllib.parse
@@ -185,10 +187,55 @@ def _send_ntfy(summary: str, port: int, config: dict) -> None:
     except Exception as e:
         _fatal(f"Failed to send ntfy notification: {e}")
 
+# ---------------------------------------------------------------------------
+# macOS native dialog (Stage 1 — local escalation)
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def _show_macos_dialog(summary: str, base_url: str, token: str, delay: int) -> subprocess.Popen:  # type: ignore[type-arg]
+    """Show a native macOS dialog in a background subprocess.
+
+    When the user clicks Approve or Reject the dialog uses `curl` to hit the
+    local callback server — exactly the same endpoint ntfy uses for Stage 2.
+    The main loop is agnostic to which stage produced the response.
+
+    Args:
+        summary:  Short description of the permission request.
+        base_url: Loopback URL (http://127.0.0.1:PORT) — same machine, no LAN needed.
+        token:    Per-request secret token to include in callback URL.
+        delay:    Seconds the dialog stays open before auto-dismissing (giving up after).
+    """
+    # Escape single quotes in summary so AppleScript string literals are safe.
+    safe = summary.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\u2019")
+
+    approve_url = f"{base_url}/approve?token={token}"
+    reject_url  = f"{base_url}/reject?token={token}"
+
+    # Write to a temp file to avoid shell-escaping nightmares with -e
+    script = f'''
+tell application "System Events"
+    set theResult to display dialog "{safe}" ¬
+        with title "Claude Code" ¬
+        buttons {{"Reject", "Approve"}} ¬
+        default button "Approve" ¬
+        giving up after {delay}
+end tell
+if gave up of theResult is false then
+    set btn to button returned of theResult
+    if btn is "Approve" then
+        do shell script "curl -sf '" & "{approve_url}" & "' &>/dev/null &"
+    else
+        do shell script "curl -sf '" & "{reject_url}" & "' &>/dev/null &"
+    end if
+end if
+'''
+    tmp = tempfile.NamedTemporaryFile(suffix=".applescript", mode="w", delete=False)
+    tmp.write(script)
+    tmp.flush()
+    return subprocess.Popen(
+        ["osascript", tmp.name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 def main() -> None:
     # 1. Read hook JSON from stdin
@@ -206,39 +253,64 @@ def main() -> None:
         from summarizer import summarize  # type: ignore
         summary = summarize(hook_data, config)
     except Exception:
-        # summarizer unavailable — use basic fallback
-        tool = hook_data.get("tool_name", "Unknown")
-        ti = hook_data.get("tool_input", {})
-        cmd = ti.get("command", ti.get("file_path", ""))
+        tool    = hook_data.get("tool_name", "Unknown")
+        ti      = hook_data.get("tool_input", {})
+        cmd     = ti.get("command", ti.get("file_path", ""))
         cmd_str = str(cmd)
         summary = f"{tool}: {cmd_str[:80]}" if cmd else f"{tool} permission requested"
 
-    # 4. Start local callback server on fixed (or dynamic) port
-    port = _get_callback_port(config)
+    # 4. Start local callback server
+    port   = _get_callback_port(config)
     server = _start_callback_server(port)
+    token  = _CallbackHandler._expected_token
+
+    total_timeout    = config.get("timeout_seconds", 60)
+    escalation_delay = config.get("escalation_delay_seconds", 10)
+
+    macos_proc: subprocess.Popen | None = None  # type: ignore[type-arg]
 
     try:
-        # 5. Fire the ntfy notification
-        _send_ntfy(summary, port, config)
+        # ───────────────────────────────────────────────────────
+        # Stage 1: macOS native dialog (quiet, desktop-only)
+        # Loopback URL — dialog runs on the same machine so no LAN needed.
+        # ───────────────────────────────────────────────────────
+        local_base = f"http://127.0.0.1:{port}"
+        macos_proc = _show_macos_dialog(summary, local_base, token, escalation_delay)
 
-        # 6. Wait for a tap or timeout
-        timeout = config.get("timeout_seconds", 60)
-        tapped = _CallbackHandler._lock.wait(timeout=timeout)
+        # Wait up to escalation_delay for the user to click the macOS dialog.
+        tapped = _CallbackHandler._lock.wait(timeout=escalation_delay)
+
+        if not tapped:
+            # ───────────────────────────────────────────────────────
+            # Stage 2: escalate to phone / Apple Watch via ntfy
+            # ───────────────────────────────────────────────────────
+            _send_ntfy(summary, port, config)
+            remaining = total_timeout - escalation_delay
+            tapped = _CallbackHandler._lock.wait(timeout=max(remaining, 5))
 
         result = _CallbackHandler.result if tapped else None
 
     finally:
         server.shutdown()
+        # Kill the macOS dialog if it’s still open (user responded via Watch)
+        if macos_proc is not None:
+            try:
+                macos_proc.terminate()
+            except Exception:
+                pass
 
-    # 7. Output decision
+    # 5. Output decision
     if result == "approve":
         _output_decision("allow")
     elif result == "always":
         _output_decision("allow", always=True)
     else:
-        # reject OR timeout
         timeout_action = config.get("timeout_action", "deny")
-        reason = "Rejected from Apple Watch." if result == "reject" else "Approval timed out — defaulting to deny."
+        reason = (
+            "Rejected from Apple Watch."
+            if result == "reject"
+            else "Approval timed out — defaulting to deny."
+        )
         if result is None and timeout_action == "allow":
             _output_decision("allow", reason="Timed out — auto-approved per config.")
         else:

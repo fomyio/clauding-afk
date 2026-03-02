@@ -10,6 +10,7 @@
     "api_key_env": "ANTHROPIC_API_KEY"
   },
   "callback_port": 45678,
+  "escalation_delay_seconds": 10,
   "timeout_seconds": 60,
   "timeout_action": "deny"
 }
