@@ -1,6 +1,8 @@
-# 🤖⌚ Claude Code Apple Watch Approver
+# 🤖⌚ claude-afk
 
-**Approve or reject Claude Code permission requests from your wrist.**
+**Claude codes. You approve from the couch, the coffee shop, or mid-cat-cuddle.**
+
+Kick off a task in your terminal and walk away. When Claude needs a decision, your Apple Watch, iPhone, or Android buzzes — tap **Approve** and it keeps going. One-command install. No cloud server. No custom app.
 
 When Claude wants to run a command, your Apple Watch buzzes. You glance down, tap **Approve**, **Always Allow**, or **Reject** — and Claude responds instantly. No cloud server. No custom iOS app. No interruptions to your workflow.
 
