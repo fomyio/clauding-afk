@@ -7,7 +7,6 @@
 
 Kick off a task in your terminal and walk away. When Claude needs a decision, your Apple Watch, iPhone, or Android buzzes — tap **Approve** and it keeps going. One-command install. No cloud server. No custom app.
 
-When Claude wants to run a command, your Apple Watch buzzes. You glance down, tap **Approve**, **Always Allow**, or **Reject** — and Claude responds instantly. No cloud server. No custom iOS app. No interruptions to your workflow.
 
 ---
 
@@ -26,7 +25,7 @@ Claude wants to run a command
          │
          ▼
 watch_approver.py (Claude Code hook)
-  1. Summarizes the request into plain English using LiteLLM
+  1. Summarizes the request into plain English using Claude Haiku (no config needed)
   2. Sends a notification to your iPhone/Watch via ntfy.sh
   3. Waits for your tap
          │
@@ -115,8 +114,8 @@ Run `claude` as normal. Your first permission prompt will arrive on your wrist.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `ntfy.topic` | *(generated)* | Your private ntfy topic — keep it secret |
-| `summarizer.enabled` | `true` | Use LLM to summarize requests |
-| `summarizer.model` | `claude-haiku-3-5` | Any [LiteLLM-supported model](https://docs.litellm.ai/docs/providers) |
+| `summarizer.enabled` | `true` | AI summaries using Claude Haiku — no API setup needed |
+| `summarizer.model` | `claude-haiku-3-5` | Override to use a different model (optional) |
 | `callback_port` | `45678` | Fixed port the hook listens on |
 | `escalation_delay_seconds` | `10` | Seconds before escalating *(if `macos_dialog` is on)* |
 | `macos_dialog` | `false` | Show a native macOS dialog before sending to Watch |
@@ -125,14 +124,15 @@ Run `claude` as normal. Your first permission prompt will arrive on your wrist.
 
 > **API key**: Claude Code passes `ANTHROPIC_API_KEY` to all hooks automatically — no setup needed. The summarizer works out of the box.
 
-### Use a different LLM
+### Use a different model
+
+By default Claude Haiku is used — powered by your existing Claude Code API key, zero config.
+To switch providers (OpenAI, Gemini, Mistral, Ollama, etc.):
 
 ```json
 "model": "gpt-4o-mini",
 "api_key_env": "OPENAI_API_KEY"
 ```
-
-Any model supported by LiteLLM works — Gemini, Mistral, local Ollama, etc.
 
 ### Self-host ntfy
 
