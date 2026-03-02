@@ -1,0 +1,17 @@
+{
+  "_comment": "Copy this file to config.json and fill in your values.",
+
+  "ntfy": {
+    "topic": "YOUR_LONG_RANDOM_TOPIC",
+    "server": "https://ntfy.sh"
+  },
+
+  "summarizer": {
+    "enabled": true,
+    "model": "claude-haiku-3-5",
+    "api_key_env": "ANTHROPIC_API_KEY"
+  },
+
+  "timeout_seconds": 60,
+  "timeout_action": "deny"
+}
