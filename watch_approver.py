@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 import urllib.parse
 from pathlib import Path
@@ -188,7 +189,7 @@ def _send_ntfy(summary: str, port: int, config: dict) -> None:
         _fatal(f"Failed to send ntfy notification: {e}")
 
 # ---------------------------------------------------------------------------
-# macOS native dialog (Stage 1 — local escalation)
+# Stage 1 — terminal keypress (default) and macOS dialog (opt-in)
 # ---------------------------------------------------------------------------
 
 def _show_macos_dialog(summary: str, base_url: str, token: str, delay: int) -> subprocess.Popen:  # type: ignore[type-arg]
@@ -237,6 +238,93 @@ end if
         stderr=subprocess.DEVNULL,
     )
 
+
+# ANSI colours — fall back gracefully on terminals that don't support them
+_BOLD   = "\033[1m"
+_YELLOW = "\033[33m"
+_GREEN  = "\033[32m"
+_RED    = "\033[31m"
+_DIM    = "\033[2m"
+_RESET  = "\033[0m"
+
+
+def _wait_for_terminal_keypress(base_url: str, token: str, delay: int, summary: str) -> bool:
+    """Print a one-line prompt to stderr and wait up to `delay` seconds for a keypress.
+
+    Reads directly from /dev/tty so it works even though Claude Code has
+    redirected stdin.  Returns True if the user responded, False on timeout.
+    Silently returns False when no TTY is available (CI, Windows, piped input).
+
+    Keys:
+        a / y  → approve
+        n / r  → reject
+        w      → skip to Watch immediately
+        Enter  → approve (default)
+    """
+    import select
+    try:
+        import tty as _tty
+        import termios as _termios
+    except ImportError:
+        return False  # Windows or no termios — skip silently
+
+    try:
+        tty_file = open("/dev/tty", "rb", buffering=0)  # noqa: WPS515
+    except OSError:
+        return False  # no controlling TTY (e.g. running in background)
+
+    approve_url = f"{base_url}/approve?token={token}"
+    reject_url  = f"{base_url}/reject?token={token}"
+
+    # Print prompt to stderr (stdout carries the JSON decision)
+    prompt = (
+        f"\r{_YELLOW}{_BOLD}⚡ claude-afk{_RESET} › {summary}  "
+        f"{_GREEN}[A]{_RESET}pprove  "
+        f"{_RED}[R]{_RESET}eject  "
+        f"{_DIM}[W]atch ({delay}s)…{_RESET}  "
+    )
+    print(prompt, end="", flush=True, file=sys.stderr)
+
+    fd = tty_file.fileno()
+    old_attrs = _termios.tcgetattr(fd)
+    responded = False
+    try:
+        _tty.setraw(fd)
+        deadline = time.monotonic() + delay
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            ready, _, _ = select.select([tty_file], [], [], min(0.2, remaining))
+            if not ready:
+                continue
+            ch = tty_file.read(1).decode("utf-8", errors="ignore").lower()
+            if ch in ("a", "y", "\r", "\n"):      # approve
+                urllib.request.urlopen(approve_url, timeout=3)
+                responded = True
+                break
+            elif ch in ("n", "r"):                # reject
+                urllib.request.urlopen(reject_url, timeout=3)
+                responded = True
+                break
+            elif ch == "w":                       # skip to Watch now
+                break
+            elif ch in ("\x03", "\x04"):          # Ctrl-C / Ctrl-D — reject
+                urllib.request.urlopen(reject_url, timeout=3)
+                responded = True
+                break
+    except Exception:
+        pass
+    finally:
+        try:
+            _termios.tcsetattr(fd, _termios.TCSADRAIN, old_attrs)
+        except Exception:
+            pass
+        tty_file.close()
+        # Clear the prompt line
+        print(f"\r{' ' * 80}\r", end="", flush=True, file=sys.stderr)
+
+    return responded
+
+
 def main() -> None:
     # 1. Read hook JSON from stdin
     try:
@@ -272,23 +360,26 @@ def main() -> None:
     try:
         local_base = f"http://127.0.0.1:{port}"
 
-        # ── Stage 1 (optional): macOS native dialog ──────────────────────────
-        # Disabled by default — enable with "macos_dialog": true in config.json.
-        # Only runs on macOS. Skipped on Linux / Windows automatically.
-        # When enabled: shows a modal Approve/Reject dialog for `escalation_delay`
-        # seconds, then escalates to ntfy (phone/Watch) if not answered.
-        use_dialog = config.get("macos_dialog", False) and sys.platform == "darwin"
+        # ── Stage 1a: Terminal keypress (default, non-modal) ──────────────────
+        # Prints a one-line prompt to the terminal and waits `escalation_delay`
+        # seconds for A / R keypress. If the user is at the desk they respond
+        # instantly without their phone ever buzzing.
+        # Silently skipped when no TTY is available (background process, CI, etc).
+        tapped = _wait_for_terminal_keypress(local_base, token, escalation_delay, summary)
 
-        if use_dialog:
+        # ── Stage 1b (optional): macOS dialog overlay ──────────────────────────
+        # Enable with "macos_dialog": true.
+        # If terminal TTY was skipped, the macos dialog handles the delay.
+        macos_proc: subprocess.Popen | None = None  # type: ignore[type-arg]
+        if not tapped and config.get("macos_dialog", False) and sys.platform == "darwin":
             macos_proc = _show_macos_dialog(summary, local_base, token, escalation_delay)
+            # Wait if TTY prompt didn't exist/work (to enforce the delay)
             tapped = _CallbackHandler._lock.wait(timeout=escalation_delay)
-        else:
-            tapped = False  # skip straight to ntfy
 
         if not tapped:
             # ── Stage 2: ntfy → phone / Apple Watch ──────────────────────────
             _send_ntfy(summary, port, config)
-            remaining = total_timeout - (escalation_delay if use_dialog else 0)
+            remaining = total_timeout - escalation_delay
             tapped = _CallbackHandler._lock.wait(timeout=max(remaining, 5))
 
         result = _CallbackHandler.result if tapped else None
