@@ -270,22 +270,25 @@ def main() -> None:
     macos_proc: subprocess.Popen | None = None  # type: ignore[type-arg]
 
     try:
-        # ───────────────────────────────────────────────────────
-        # Stage 1: macOS native dialog (quiet, desktop-only)
-        # Loopback URL — dialog runs on the same machine so no LAN needed.
-        # ───────────────────────────────────────────────────────
         local_base = f"http://127.0.0.1:{port}"
-        macos_proc = _show_macos_dialog(summary, local_base, token, escalation_delay)
 
-        # Wait up to escalation_delay for the user to click the macOS dialog.
-        tapped = _CallbackHandler._lock.wait(timeout=escalation_delay)
+        # ── Stage 1 (optional): macOS native dialog ──────────────────────────
+        # Disabled by default — enable with "macos_dialog": true in config.json.
+        # Only runs on macOS. Skipped on Linux / Windows automatically.
+        # When enabled: shows a modal Approve/Reject dialog for `escalation_delay`
+        # seconds, then escalates to ntfy (phone/Watch) if not answered.
+        use_dialog = config.get("macos_dialog", False) and sys.platform == "darwin"
+
+        if use_dialog:
+            macos_proc = _show_macos_dialog(summary, local_base, token, escalation_delay)
+            tapped = _CallbackHandler._lock.wait(timeout=escalation_delay)
+        else:
+            tapped = False  # skip straight to ntfy
 
         if not tapped:
-            # ───────────────────────────────────────────────────────
-            # Stage 2: escalate to phone / Apple Watch via ntfy
-            # ───────────────────────────────────────────────────────
+            # ── Stage 2: ntfy → phone / Apple Watch ──────────────────────────
             _send_ntfy(summary, port, config)
-            remaining = total_timeout - escalation_delay
+            remaining = total_timeout - (escalation_delay if use_dialog else 0)
             tapped = _CallbackHandler._lock.wait(timeout=max(remaining, 5))
 
         result = _CallbackHandler.result if tapped else None

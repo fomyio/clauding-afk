@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy this file to config.json and fill in your values.",
+  "_comment": "Copy this to ~/.claude/hooks/config.json and fill in your values.",
   "ntfy": {
     "topic": "YOUR_LONG_RANDOM_TOPIC",
     "server": "https://ntfy.sh"
@@ -11,6 +11,7 @@
   },
   "callback_port": 45678,
   "escalation_delay_seconds": 10,
+  "macos_dialog": false,
   "timeout_seconds": 60,
   "timeout_action": "deny"
 }
