@@ -132,7 +132,7 @@ echo ""
 echo "⚙️   Registering PermissionRequest hook in $CLAUDE_SETTINGS..."
 
 python3 - <<PYEOF
-import json, pathlib, sys
+import json, pathlib
 
 settings_path = pathlib.Path("$CLAUDE_SETTINGS")
 
@@ -146,17 +146,32 @@ else:
     settings = {}
 
 hook_command = "python3 ~/.claude/hooks/watch_approver.py"
-hook_entry = {"type": "command", "command": hook_command}
+
+# New format: { matcher: {}, hooks: [{ type, command }] }
+new_entry = {
+    "matcher": {},
+    "hooks": [{"type": "command", "command": hook_command}]
+}
 
 hooks = settings.setdefault("hooks", {})
 existing = hooks.get("PermissionRequest", [])
 
-# Avoid duplicates
-already = any(h.get("command") == hook_command for h in existing if isinstance(h, dict))
+# Check for duplicate (search inside nested hooks arrays)
+already = any(
+    any(h.get("command") == hook_command for h in entry.get("hooks", []))
+    for entry in existing if isinstance(entry, dict)
+)
+
+# Also handle old flat format — clean it up
+old_flat = [e for e in existing if isinstance(e, dict) and e.get("command") == hook_command]
+for old in old_flat:
+    existing.remove(old)
+    already = False  # force re-add in new format
+
 if already:
     print("ℹ️   Hook already registered — no changes to settings.json.")
 else:
-    existing.append(hook_entry)
+    existing.append(new_entry)
     hooks["PermissionRequest"] = existing
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2))
