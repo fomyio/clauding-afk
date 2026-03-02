@@ -12,6 +12,8 @@ Kick off a task in your terminal and walk away. When Claude needs a decision, yo
 
 ## Why this exists
 
+![claude-afk-demo-ezgif com-video-to-gif-converter](https://github.com/user-attachments/assets/912a5655-b186-4db8-b9d5-6e7b5585cfef)
+
 Claude Code is powerful — and careful. Before it runs anything potentially destructive, it asks for your permission. That's great. But if you're away from your desk, getting a coffee, or just don't want to tab back to the terminal, that prompt blocks your entire workflow until you respond.
 
 This hook intercepts that prompt and sends it straight to your wrist.
