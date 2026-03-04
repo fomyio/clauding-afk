@@ -1,6 +1,6 @@
 # 🤖⌚ claude-afk
 
-<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/730fd8a7-795b-4a38-890a-eea731b6d67f" />
+<img width="1024" height="339" alt="image" src="https://github.com/user-attachments/assets/40a7436a-85cb-4489-b46a-0d4d160d226e" />
 
 
 ---
