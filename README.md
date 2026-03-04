@@ -1,6 +1,6 @@
 # 🤖⌚ claude-afk
 
-<img width="3168" height="1344" alt="Gemini_Generated_Image_6ylofq6ylofq6ylo (1)" src="https://github.com/user-attachments/assets/f4958f6f-5556-428b-8e75-6294bc105caf" />
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/730fd8a7-795b-4a38-890a-eea731b6d67f" />
 
 
 ---
