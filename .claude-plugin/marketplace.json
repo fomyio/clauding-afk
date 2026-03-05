@@ -1,0 +1,23 @@
+{
+    "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+    "name": "fomyio",
+    "description": "Fomy.io Claude Code Extensions",
+    "owner": {
+        "name": "Mosaab",
+        "email": "hello@fomy.io"
+    },
+    "plugins": [
+        {
+            "name": "claude-afk",
+            "description": "Approve Claude Code permission requests remotely from your Apple Watch or phone.",
+            "version": "1.0.0",
+            "author": {
+                "name": "Mosaab",
+                "email": "hello@fomy.io"
+            },
+            "source": "./plugin",
+            "category": "productivity",
+            "strict": false
+        }
+    ]
+}

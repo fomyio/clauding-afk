@@ -1,0 +1,5 @@
+{
+    "tool_name": "Bash",
+    "tool_input": {"command": "git status"},
+    "cwd": "/Users/mosaab/Documents/Projects/ClaudeCodeAppleWatch"
+}

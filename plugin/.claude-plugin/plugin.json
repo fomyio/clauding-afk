@@ -1,0 +1,11 @@
+{
+    "name": "claude-afk",
+    "description": "Approve Claude Code permission requests remotely from your Apple Watch or phone.",
+    "version": "1.0.0",
+    "author": {
+        "name": "Mosaab",
+        "url": "https://fomy.io"
+    },
+    "homepage": "https://github.com/fomyio/claude-afk",
+    "repository": "https://github.com/fomyio/claude-afk.git"
+}

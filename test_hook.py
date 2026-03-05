@@ -63,7 +63,7 @@ SAMPLE_REQUESTS = [
 ]
 
 
-def run_hook(payload: dict, simulate_action: str | None, timeout: int = 10) -> dict | None:
+def run_hook(payload: dict, simulate_action, timeout: int = 10):
     """
     Run watch_approver.py with the given payload piped to stdin.
     If simulate_action is set, hit the callback URL automatically after 1 second.
@@ -100,7 +100,7 @@ def run_hook(payload: dict, simulate_action: str | None, timeout: int = 10) -> d
         return None
 
 
-def assert_decision(result: dict | None, expected_behavior: str, label: str) -> bool:
+def assert_decision(result, expected_behavior: str, label: str) -> bool:
     """Assert the hookSpecificOutput contains the expected decision behavior."""
     if result is None:
         print(f"  ❌  {label}: No output received.")
@@ -128,16 +128,16 @@ def test_summarizer_only():
     from summarizer import _format_fallback  # noqa
 
     cases = [
-        ("Bash", {"command": "npm run build"}, "/tmp", "Run: npm run build"),
-        ("Write", {"file_path": "/tmp/foo/bar.ts"}, "/tmp/foo", "Write → bar.ts"),
-        ("Read", {"file_path": "/etc/hosts"}, "/tmp", "Read: /etc/hosts"),
-        ("WebSearch", {"query": "python asyncio tutorial"}, "/tmp", "Web search: python asyncio tutorial"),
-        ("Unknown", {}, "/tmp", "Unknown permission requested"),
+        ("Bash", {"command": "npm run build"}, "/tmp", "[Unknown] Run: npm run build"),
+        ("Write", {"file_path": "/tmp/foo/bar.ts"}, "/tmp/foo", "[Unknown] Write → bar.ts"),
+        ("Read", {"file_path": "/etc/hosts"}, "/tmp", "[Unknown] Read: /etc/hosts"),
+        ("WebSearch", {"query": "python asyncio tutorial"}, "/tmp", "[Unknown] Web search: python asyncio tutorial"),
+        ("Unknown", {}, "/tmp", "[Unknown] Unknown permission requested"),
     ]
 
     passed = 0
     for tool, inp, cwd, expected in cases:
-        result = _format_fallback(tool, inp, cwd)
+        result = _format_fallback(tool, inp, cwd, "Unknown")
         ok = result == expected
         status = "✅" if ok else "❌"
         print(f"  {status}  {tool}: got '{result}'" + ("" if ok else f" (expected '{expected}')"))
@@ -177,6 +177,7 @@ def main():
     test_config = {
         "ntfy": {"topic": "test-topic-do-not-use", "server": "http://127.0.0.1:19999"},
         "summarizer": {"enabled": False},
+        "escalation_delay_seconds": 1,
         "timeout_seconds": 3,
         "timeout_action": "deny",
     }
@@ -213,6 +214,8 @@ watch_approver.main()
             result = json.loads(stdout.strip())
         except Exception:
             pass
+    else:
+        print(f"  [stderr] {stderr.strip()}", file=sys.stderr)
 
     # ntfy call will fail (no server at 19999) → hook should still output deny
     all_passed &= assert_decision(result, "deny", "Timeout/ntfy-fail → deny")

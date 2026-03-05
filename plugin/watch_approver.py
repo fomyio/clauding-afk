@@ -28,14 +28,34 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 HOOK_DIR = Path(__file__).parent
-CONFIG_PATH = HOOK_DIR / "config.json"
+LEGACY_CONFIG = HOOK_DIR / "config.json"
+USER_CONFIG = Path.home() / ".config" / "claude-afk" / "config.json"
+FALLBACK_CONFIG = Path.home() / ".claude-afk-config.json"
 
 
 def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        _fatal(f"Config not found at {CONFIG_PATH}. Run install.sh first.")
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
+    config_path = None
+    
+    if USER_CONFIG.exists():
+        config_path = USER_CONFIG
+    elif FALLBACK_CONFIG.exists():
+        config_path = FALLBACK_CONFIG
+    elif LEGACY_CONFIG.exists():
+        config_path = LEGACY_CONFIG
+        
+    if not config_path:
+        _fatal(
+            f"Config not found! Please create {USER_CONFIG}.\n"
+            f"See https://github.com/fomyio/claude-afk for instructions."
+        )
+        return {} # never reached
+
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        _fatal(f"Invalid JSON in {config_path}: {e}")
+        return {}
 
 
 def _fatal(msg: str) -> None:
@@ -81,7 +101,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     preventing other devices on the LAN from spoofing approve/reject.
     """
 
-    result: str | None = None        # "approve" | "always" | "reject"
+    result = None        # "approve" | "always" | "reject"
     _lock = threading.Event()
     _expected_token: str = ""        # set per-request in _start_callback_server
 
@@ -138,16 +158,47 @@ def _start_callback_server(port: int) -> http.server.HTTPServer:
 
 
 # ---------------------------------------------------------------------------
+# Auto-approve logic
+# ---------------------------------------------------------------------------
+
+def _is_auto_approved(hook_data: dict, config: dict) -> bool:
+    """Check if the requested action matches user-defined safe patterns."""
+    import fnmatch
+    
+    # Only auto-approve Bash commands for now, as that's 99% of the noise
+    tool_name = hook_data.get("tool_name")
+    if tool_name != "Bash":
+        return False
+        
+    cmd = hook_data.get("tool_input", {}).get("command", "")
+    if not cmd:
+        return False
+        
+    # Default safe read-only commands if user hasn't configured any
+    default_rules = [
+        "ls*", "cat*", "pwd", "whoami", "echo*",
+        "git status*", "git branch*", "git log*", "git diff*", "git show*"
+    ]
+    
+    rules = config.get("auto_approve", default_rules)
+    
+    # Check if the command matches any glob pattern
+    # Clean up the command (strip trailing newlines)
+    cmd = cmd.strip()
+    return any(fnmatch.fnmatch(cmd, rule) for rule in rules)
+
+
+# ---------------------------------------------------------------------------
 # ntfy.sh notification
 # ---------------------------------------------------------------------------
 
-def _send_ntfy(summary: str, port: int, config: dict) -> None:
+def _send_ntfy(summary: str, port: int, config: dict):
     ntfy_cfg = config.get("ntfy", {})
     server = ntfy_cfg.get("server", "https://ntfy.sh").rstrip("/")
     topic = ntfy_cfg.get("topic", "")
 
     if not topic:
-        _fatal("ntfy topic not set in config.json.")
+        return None
 
     # Get Mac's LAN IP via UDP trick (no data sent)
     try:
@@ -176,6 +227,10 @@ def _send_ntfy(summary: str, port: int, config: dict) -> None:
         ),
         "Content-Type": "text/plain; charset=utf-8",
     }
+    
+    # Store message ID if we want to refer to this specific notification later
+    # ntfy returns the message ID in the response headers/JSON
+    message_id = None
 
     url = f"{server}/{urllib.parse.quote(topic, safe='')}"
     data = summary.encode("utf-8")
@@ -185,8 +240,43 @@ def _send_ntfy(summary: str, port: int, config: dict) -> None:
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status not in (200, 201, 204):
                 _fatal(f"ntfy.sh returned HTTP {resp.status}")
+            # Try to grab the message ID so we can edit/clear it later if needed
+            try:
+                resp_data = json.loads(resp.read().decode('utf-8'))
+                message_id = resp_data.get('id')
+            except Exception:
+                pass
     except Exception as e:
         _fatal(f"Failed to send ntfy notification: {e}")
+        
+    return message_id
+
+
+def _send_ntfy_resolution(summary: str, result_icon: str, original_id, config: dict) -> None:
+    """Send a follow-up notification or update to show the final decision."""
+    ntfy_cfg = config.get("ntfy", {})
+    server = ntfy_cfg.get("server", "https://ntfy.sh").rstrip("/")
+    topic = ntfy_cfg.get("topic", "")
+
+    if not topic:
+        return
+        
+    headers = {
+        "Title": "ClaudeCode (Resolved)",
+        "Priority": "default", 
+        "Tags": result_icon,
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    
+    url = f"{server}/{urllib.parse.quote(topic, safe='')}"
+    data = summary.encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    
+    try:
+        # Fire and forget; don't fail the approval if this fails
+        urllib.request.urlopen(req, timeout=3)
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Stage 1 — terminal keypress (default) and macOS dialog (opt-in)
@@ -248,7 +338,7 @@ _DIM    = "\033[2m"
 _RESET  = "\033[0m"
 
 
-def _wait_for_terminal_keypress(base_url: str, token: str, delay: int, summary: str) -> bool:
+def _wait_for_terminal_keypress(base_url: str, token: str, delay: int, summary: str, is_configured: bool = True) -> bool:
     """Print a one-line prompt to stderr and wait up to `delay` seconds for a keypress.
 
     Reads directly from /dev/tty so it works even though Claude Code has
@@ -277,12 +367,20 @@ def _wait_for_terminal_keypress(base_url: str, token: str, delay: int, summary: 
     reject_url  = f"{base_url}/reject?token={token}"
 
     # Print prompt to stderr (stdout carries the JSON decision)
-    prompt = (
-        f"\r{_YELLOW}{_BOLD}⚡ claude-afk{_RESET} › {summary}  "
-        f"{_GREEN}[A]{_RESET}pprove  "
-        f"{_RED}[R]{_RESET}eject  "
-        f"{_DIM}[W]atch ({delay}s)…{_RESET}  "
-    )
+    if is_configured:
+        prompt = (
+            f"\r{_YELLOW}{_BOLD}⚡ claude-afk{_RESET} › {summary}  "
+            f"{_GREEN}[A]{_RESET}pprove  "
+            f"{_RED}[R]{_RESET}eject  "
+            f"{_DIM}[W]atch ({delay}s)…{_RESET}  "
+        )
+    else:
+        prompt = (
+            f"\r{_YELLOW}{_BOLD}⚡ claude-afk{_RESET} › {summary}  "
+            f"{_GREEN}[A]{_RESET}pprove  "
+            f"{_RED}[R]{_RESET}eject  "
+            f"{_DIM}(ntfy unconfigured){_RESET}  "
+        )
     print(prompt, end="", flush=True, file=sys.stderr)
 
     fd = tty_file.fileno()
@@ -325,6 +423,17 @@ def _wait_for_terminal_keypress(base_url: str, token: str, delay: int, summary: 
     return responded
 
 
+def _build_inline_summary(hook_data: dict, project_name: str) -> str:
+    """Fast, no-API summary for the terminal prompt (shown before the delay)."""
+    tool = hook_data.get("tool_name", "Unknown")
+    ti   = hook_data.get("tool_input", {})
+    cmd  = ti.get("command", ti.get("file_path", ""))
+    cmd_str = str(cmd).strip() if cmd else ""
+    if cmd_str and len(cmd_str) > 80:
+        cmd_str = cmd_str[:77] + "…"
+    return f"[{project_name}] {tool}: {cmd_str}" if cmd_str else f"[{project_name}] {tool} permission requested"
+
+
 def main() -> None:
     # 1. Read hook JSON from stdin
     try:
@@ -336,51 +445,82 @@ def main() -> None:
     # 2. Load config
     config = load_config()
 
-    # 3. Summarize the request
-    try:
-        from summarizer import summarize  # type: ignore
-        summary = summarize(hook_data, config)
-    except Exception:
-        tool    = hook_data.get("tool_name", "Unknown")
-        ti      = hook_data.get("tool_input", {})
-        cmd     = ti.get("command", ti.get("file_path", ""))
-        cmd_str = str(cmd)
-        summary = f"{tool}: {cmd_str[:80]}" if cmd else f"{tool} permission requested"
+    # 3. Check for auto-approve (skips everything else if matched)
+    if _is_auto_approved(hook_data, config):
+        _output_decision("allow", reason="Auto-approved by rules in config.json")
+        return
 
-    # 4. Start local callback server
+    # 4. Extract project context (from cwd) — cheap, no API call
+    cwd          = hook_data.get("cwd", "")
+    project_name = os.path.basename(cwd) if cwd else "Unknown"
+
+    # 5. Build a FAST inline summary for the terminal prompt (no LLM call yet).
+    #    The LLM summarizer runs only if the user doesn't respond within the
+    #    escalation window — i.e. only when we actually need to send to the Watch.
+    terminal_summary = _build_inline_summary(hook_data, project_name)
+
+    # 6. Start local callback server
     port   = _get_callback_port(config)
     server = _start_callback_server(port)
     token  = _CallbackHandler._expected_token
 
-    total_timeout    = config.get("timeout_seconds", 60)
-    escalation_delay = config.get("escalation_delay_seconds", 10)
+    ntfy_cfg = config.get("ntfy", {})
+    topic = ntfy_cfg.get("topic", "")
 
-    macos_proc: subprocess.Popen | None = None  # type: ignore[type-arg]
+    total_timeout    = config.get("timeout_seconds", 60)
+    
+    # If unconfigured, block in the terminal prompt for the entire timeout duration 
+    # instead of escalating to missing watch notifications.
+    if not topic:
+        escalation_delay = total_timeout
+    else:
+        escalation_delay = config.get("escalation_delay_seconds", 10)
+
+    macos_proc = None
+    ntfy_msg_id = None
 
     try:
         local_base = f"http://127.0.0.1:{port}"
 
         # ── Stage 1a: Terminal keypress (default, non-modal) ──────────────────
-        # Prints a one-line prompt to the terminal and waits `escalation_delay`
-        # seconds for A / R keypress. If the user is at the desk they respond
-        # instantly without their phone ever buzzing.
-        # Silently skipped when no TTY is available (background process, CI, etc).
-        tapped = _wait_for_terminal_keypress(local_base, token, escalation_delay, summary)
+        # Shows the prompt with the fast inline summary (no API latency).
+        # The full LLM summary is only computed *after* if we need to escalate.
+        tapped = _wait_for_terminal_keypress(local_base, token, escalation_delay, terminal_summary, is_configured=bool(topic))
 
         # ── Stage 1b (optional): macOS dialog overlay ──────────────────────────
         # Enable with "macos_dialog": true.
         # If terminal TTY was skipped, the macos dialog handles the delay.
-        macos_proc: subprocess.Popen | None = None  # type: ignore[type-arg]
+        macos_proc = None
         if not tapped and config.get("macos_dialog", False) and sys.platform == "darwin":
-            macos_proc = _show_macos_dialog(summary, local_base, token, escalation_delay)
-            # Wait if TTY prompt didn't exist/work (to enforce the delay)
+            macos_proc = _show_macos_dialog(terminal_summary, local_base, token, escalation_delay)
+            tapped = _CallbackHandler._lock.wait(timeout=escalation_delay)
+
+        if not tapped:
+            # ── Stage 1c: Plain sleep fallback ───────────────────────────────
+            # If neither the TTY prompt nor the macOS dialog ran (e.g. Claude
+            # Code's hook has no controlling terminal), we still honour the
+            # escalation delay so the phone/Watch notification isn't instant.
+            # We poll the callback lock so a response from any other stage
+            # (e.g. a browser extension in future) can cut the wait short.
             tapped = _CallbackHandler._lock.wait(timeout=escalation_delay)
 
         if not tapped:
             # ── Stage 2: ntfy → phone / Apple Watch ──────────────────────────
-            _send_ntfy(summary, port, config)
+            # Only NOW run the (potentially slow) LLM summarizer — only if the
+            # user didn't respond during the escalation delay. This means we
+            # never spend an API call on commands you approve at the terminal.
+            try:
+                from summarizer import summarize  # type: ignore
+                watch_summary = summarize(hook_data, config, project_name)
+            except Exception:
+                watch_summary = terminal_summary  # fall back to inline summary
+
+            ntfy_msg_id = _send_ntfy(watch_summary, port, config)
             remaining = total_timeout - escalation_delay
             tapped = _CallbackHandler._lock.wait(timeout=max(remaining, 5))
+        else:
+            # Responded before escalation — no LLM needed, no Watch buzz
+            watch_summary = terminal_summary
 
         result = _CallbackHandler.result if tapped else None
 
@@ -393,10 +533,14 @@ def main() -> None:
             except Exception:
                 pass
 
-    # 5. Output decision
+    # 7. Output decision and send resolution notification to phone (if ntfy was sent)
     if result == "approve":
+        if ntfy_msg_id:
+            _send_ntfy_resolution(watch_summary, "white_check_mark", ntfy_msg_id, config)
         _output_decision("allow")
     elif result == "always":
+        if ntfy_msg_id:
+            _send_ntfy_resolution(watch_summary, "white_check_mark", ntfy_msg_id, config)
         _output_decision("allow", always=True)
     else:
         timeout_action = config.get("timeout_action", "deny")
@@ -406,8 +550,13 @@ def main() -> None:
             else "Approval timed out — defaulting to deny."
         )
         if result is None and timeout_action == "allow":
+            if ntfy_msg_id:
+                _send_ntfy_resolution(watch_summary, "white_check_mark", ntfy_msg_id, config)
             _output_decision("allow", reason="Timed out — auto-approved per config.")
         else:
+            if ntfy_msg_id:
+                icon = "no_entry_sign" if result == "reject" else "hourglass"
+                _send_ntfy_resolution(watch_summary, icon, ntfy_msg_id, config)
             _output_decision("deny", reason=reason)
 
 

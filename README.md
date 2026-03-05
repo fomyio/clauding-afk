@@ -69,27 +69,39 @@ instead of a raw command string.
 
 ## Install
 
+It takes 10 seconds. `claude-afk` is a native Claude Code plugin.
+
 ```bash
-git clone https://github.com/your-org/ClaudeCodeAppleWatch
-cd ClaudeCodeAppleWatch
-bash install.sh
+# 1. Add the GitHub repo as a marketplace
+claude plugin marketplace add fomyio/claude-afk
+
+# 2. Install the plugin
+claude plugin install claude-afk
 ```
 
-The installer handles everything:
-
-1. ✅ Checks Python 3
-2. 📦 Installs `requests` and `litellm`
-3. 🔑 Generates a private 5-word ntfy topic (or you enter your own)
-4. 📁 Copies hook scripts to `~/.claude/hooks/`
-5. 🔒 Opens port 45678 in the macOS firewall *(so your iPhone can reach it)*
-6. ⚙️ Registers the `PermissionRequest` hook in `~/.claude/settings.json`
-
-Then subscribe in the ntfy app:
-```
-ntfy app → + → Server: https://ntfy.sh → Topic: <shown at install>
+### 1. Set up your config
+```bash
+mkdir -p ~/.config/claude-afk
+cp ~/.claude/plugins/claude-afk/config.example.json ~/.config/claude-afk/config.json
 ```
 
-Run `claude` as normal. Your first permission prompt will arrive on your wrist.
+### 1. Set up ntfy
+1. Download the [ntfy.sh](https://ntfy.sh/) app on your iPhone and Apple Watch.
+2. Open the app, tap `+` to subscribe to a new topic.
+3. Pick a secret topic name (e.g., `my_secret_claude_channel_123`). 
+   *Tip: Use a long, unguessable string.*
+
+### 2. Add topic to config
+Edit `~/.config/claude-afk/config.json` and replace the placeholder with your secret topic name.
+
+### 3. (Optional) Enable AI Summaries
+By default, you get raw command strings. For nice human-readable summaries powered by your existing Claude API key, install LiteLLM globally:
+```bash
+pip3 install litellm
+```
+
+### 4. Verify
+Run Claude Code (`claude`) and ask it to run `ls -la`. You should see the prompt in your terminal, and after 10 seconds, your Apple Watch should buzz!
 
 ---
 
@@ -194,11 +206,13 @@ Validates the summarizer, hook JSON output, and simulates a full permission requ
 ## Project structure
 
 ```
-ClaudeCodeAppleWatch/
+claude-afk/
+├── .claude-plugin/      ← Plugin manifest
+├── hooks/               ← Auto-registers PermissionRequest hook
 ├── watch_approver.py    ← Hook entry point: server, ntfy, decision logic
 ├── summarizer.py        ← LiteLLM summarization with local fallback
 ├── config.example.json  ← Config template
-├── install.sh           ← One-command setup
+├── uninstall.sh         ← Cleanup script for legacy users
 ├── test_hook.py         ← Local test suite
 └── README.md
 ```
